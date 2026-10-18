@@ -2,6 +2,7 @@
  * Auto-Numbering Configuration and Sequence Generation Service
  * Enables customizable unique ID patterns across all enterprise entities.
  */
+import { bizStore } from './bizStore';
 
 export type AutoNumberEntityType =
   | 'materials'
@@ -192,7 +193,7 @@ function normalizeRule(rule: AutoNumberRule, defaultRule?: AutoNumberRule): Auto
  */
 export function getStoredAutoNumberRules(): AutoNumberRule[] {
   try {
-    const raw = localStorage.getItem(AUTONUMBER_STORAGE_KEY);
+    const raw = bizStore.getItem(AUTONUMBER_STORAGE_KEY);
     if (!raw) return DEFAULT_AUTONUMBER_RULES;
     const parsed = JSON.parse(raw) as AutoNumberRule[];
     // Ensure all default keys exist
@@ -216,7 +217,7 @@ export function saveStoredAutoNumberRules(rules: AutoNumberRule[]): void {
       const def = DEFAULT_AUTONUMBER_RULES.find(d => d.entityKey === r.entityKey || d.entityType === r.entityType);
       return normalizeRule(r, def);
     });
-    localStorage.setItem(AUTONUMBER_STORAGE_KEY, JSON.stringify(normalized));
+    bizStore.setItem(AUTONUMBER_STORAGE_KEY, JSON.stringify(normalized));
   } catch (err) {
     console.error('Failed to save auto-number rules', err);
   }

@@ -1,3 +1,4 @@
+import { bizStore } from './services/bizStore';
 import React, { useState, useEffect } from 'react';
 import { TopNavbar, ActiveTab } from './components/TopNavbar';
 import { CostAnalysisView } from './components/CostAnalysisView';
@@ -108,6 +109,30 @@ export default function App() {
 
     return cleanup;
   }, [currentUser]);
+
+  // Show server errors that no handler caught
+  useEffect(() => {
+    const onReject = (ev: PromiseRejectionEvent) => {
+      const msg = ev?.reason?.message;
+      if (msg) {
+        ev.preventDefault();
+        showToast(msg);
+      }
+    };
+    window.addEventListener('unhandledrejection', onReject);
+    return () => window.removeEventListener('unhandledrejection', onReject);
+  }, []);
+
+  // Server says the session is gone: go back to the login page
+  useEffect(() => {
+    const onCleared = () => {
+      saveStoredCurrentUser(null);
+      setCurrentUser(null);
+      setIsWarningModalOpen(false);
+    };
+    window.addEventListener('fxtt_session_cleared', onCleared);
+    return () => window.removeEventListener('fxtt_session_cleared', onCleared);
+  }, []);
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('directory-hub');
   const [isProjectPickerOpen, setIsProjectPickerOpen] = useState(false);
@@ -641,47 +666,40 @@ export default function App() {
     }
   };
 
-  // Initial load from backend API if available
+  // Load data from the server after login
+  const [isDataReady, setIsDataReady] = useState(false);
+  const [loadError, setLoadError] = useState('');
   useEffect(() => {
+    if (!currentUser) {
+      setIsDataReady(false);
+      return;
+    }
     const fetchData = async () => {
       try {
-        const [projRes, matRes, prodRes, supRes, outRes, subRes, invRes, cliRes, catRes, compRes, usrRes] = await Promise.all([
-          api.getProjects(),
-          api.getMaterials(),
-          api.getProduceItems(),
-          api.getSuppliers(),
-          api.getOutsourcedServices(),
-          api.getSubcontractors(),
-          api.getInventory(),
-          api.getClients(),
-          api.getCategories(),
-          api.getCompanyDetails(),
-          api.getUsers()
-        ]);
-        if (Array.isArray(projRes)) {
-          setProjects(projRes);
-          if (projRes.length > 0 && !selectedProjectId) {
-            setSelectedProjectId(projRes[0].id);
-          } else if (projRes.length === 0) {
-            setSelectedProjectId('');
-          }
-        }
-        if (Array.isArray(matRes)) setMaterials(matRes);
-        if (Array.isArray(prodRes)) setProduceItems(prodRes);
-        if (Array.isArray(supRes)) setSuppliers(supRes);
-        if (Array.isArray(outRes)) setOutsourcedServices(outRes);
-        if (Array.isArray(subRes)) setSubcontractors(subRes);
-        if (Array.isArray(invRes)) setInventory(invRes);
-        if (Array.isArray(cliRes)) setClients(cliRes);
-        if (Array.isArray(catRes)) setCategories(catRes);
-        if (compRes && compRes.name) setCompanyDetails(compRes);
-        if (Array.isArray(usrRes) && usrRes.length > 0) setUsers(usrRes);
+        setLoadError('');
+        await bizStore.hydrate();
+        const d = await api.loadAll();
+        setProjects(d.projects);
+        setSelectedProjectId(prev => prev && d.projects.some((p: any) => p.id === prev) ? prev : (d.projects[0]?.id || ''));
+        setMaterials(d.materials);
+        setProduceItems(d.produce);
+        setSuppliers(d.suppliers);
+        setOutsourcedServices(d.outsourced);
+        setSubcontractors(d.subcontractors);
+        setInventory(d.inventory);
+        setClients(d.clients);
+        setCategories(d.categories);
+        setTransactions(d.transactions);
+        if (d.company && d.company.name) setCompanyDetails(d.company);
+        if (Array.isArray(d.users)) setUsers(d.users);
+        setIsDataReady(true);
       } catch (e) {
-        console.warn('Backend loading defaulted to pre-seeded enterprise datasets:', e);
+        console.error('Could not load data:', e);
+        setLoadError('Could not load data. Check the connection and try again.');
       }
     };
     fetchData();
-  }, []);
+  }, [currentUser?.id]);
 
   // Recalculate with Python Analytics Engine
   const handleRefreshAnalytics = async () => {
@@ -1183,41 +1201,24 @@ export default function App() {
   };
 
   // Record Inventory IN / OUT Transaction
-  const handleInventoryTransaction = (transaction: InventoryTransaction) => {
-    // 0. Update recorded transactions
+  const handleInventoryTransaction = async (transaction: InventoryTransaction) => {
+    // The server checks stock and saves everything in one step
+    let saved: InventoryTransaction;
+    try {
+      saved = await api.createTransaction(transaction);
+    } catch (e: any) {
+      showToast(e?.message || 'Could not save stock movement');
+      return;
+    }
+    transaction = { ...transaction, ...saved };
     setTransactions((prev) => [transaction, ...prev]);
-    api.createTransaction(transaction).catch(console.error);
-
-    // 1. Update materials in-stock state
-    setMaterials(prev => prev.map(m => {
-      if (m.id === transaction.materialId || m.code === transaction.materialCode) {
-        api.updateMaterial(m.id, { inStock: transaction.newAvailableQuantity }).catch(console.error);
-        return {
-          ...m,
-          inStock: transaction.newAvailableQuantity,
-          lastUpdated: new Date().toISOString().split('T')[0]
-        };
-      }
-      return m;
-    }));
-
-    // 2. Update inventory records if matching
-    setInventory(prev => prev.map(i => {
-      if (i.materialId === transaction.materialId || i.sku === transaction.materialCode) {
-        const onHand = transaction.newAvailableQuantity;
-        const available = Math.max(0, onHand - (i.reserved || 0));
-        api.updateInventory(i.id, { onHand, available }).catch(console.error);
-        return {
-          ...i,
-          onHand,
-          available,
-          currentStock: onHand,
-          availableStock: available,
-          lastMovementDate: new Date().toISOString().split('T')[0]
-        };
-      }
-      return i;
-    }));
+    try {
+      const [mats, inv] = await Promise.all([api.getMaterials(), api.getInventory()]);
+      setMaterials(mats);
+      setInventory(inv);
+    } catch (e) {
+      console.error(e);
+    }
 
     // 3. Log to system audit trail
     logAuditEvent(
@@ -1341,6 +1342,26 @@ export default function App() {
           onRegisterGoogleUser={handleRegisterGoogleUser}
           sessionExpiredNotice={sessionExpiredNotice}
         />
+      </div>
+    );
+  }
+
+  if (!isDataReady) {
+    return (
+      <div className="min-h-screen bg-white flex flex-col items-center justify-center gap-3 text-slate-700">
+        {loadError ? (
+          <>
+            <p className="text-sm font-semibold">{loadError}</p>
+            <button
+              onClick={() => window.location.reload()}
+              className="px-4 py-2 rounded-lg bg-slate-900 text-white text-sm font-bold"
+            >
+              Retry
+            </button>
+          </>
+        ) : (
+          <p className="text-sm font-semibold">Loading...</p>
+        )}
       </div>
     );
   }

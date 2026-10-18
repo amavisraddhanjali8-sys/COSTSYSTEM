@@ -43,7 +43,52 @@ async function fetchWithFallback<T>(url: string, fallbackData: T, options?: Requ
   return fallbackData;
 }
 
+// Read the JSON body. Throw the server message if the request failed.
+async function readJson(res: Response): Promise<any> {
+  let body: any = null;
+  try { body = await res.json(); } catch { /* no body */ }
+  if (!res.ok) {
+    throw new Error((body && (body.error || body.message)) || `Request failed (${res.status})`);
+  }
+  return body;
+}
+
+// Same, for deletes
+async function readOk(res: Response): Promise<boolean> {
+  if (!res.ok) {
+    let msg = `Request failed (${res.status})`;
+    try { const b = await res.json(); msg = b.error || msg; } catch { /* no body */ }
+    throw new Error(msg);
+  }
+  return true;
+}
+
+// Strict GET: throws instead of returning fake empty data
+async function getJson<T>(url: string): Promise<T> {
+  const res = await fetch(url);
+  return readJson(res);
+}
+
 export const api = {
+  // Load every list the app needs. Throws if anything fails.
+  loadAll: async () => {
+    const [projects, materials, produce, suppliers, outsourced, subcontractors, inventory, clients, categories, company, users, transactions] = await Promise.all([
+      getJson<any[]>('/api/projects'),
+      getJson<any[]>('/api/materials'),
+      getJson<any[]>('/api/produce'),
+      getJson<any[]>('/api/suppliers'),
+      getJson<any[]>('/api/outsourced'),
+      getJson<any[]>('/api/subcontractors'),
+      getJson<any[]>('/api/inventory'),
+      getJson<any[]>('/api/clients'),
+      getJson<any[]>('/api/categories'),
+      getJson<any>('/api/company-details'),
+      getJson<any[]>('/api/users').catch(() => null as any), // admin only
+      getJson<any[]>('/api/inventory/transactions')
+    ]);
+    return { projects, materials, produce, suppliers, outsourced, subcontractors, inventory, clients, categories, company, users, transactions };
+  },
+
   // Health
   checkHealth: async () => {
     return fetchWithFallback('/api/health', { status: 'ok', pythonEngine: 'active' });
@@ -60,19 +105,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: `sup-${Date.now()}`,
-      rating: 5,
-      onTimeDeliveryPct: 100,
-      qualityScorePct: 100,
-      contractHistory: [],
-      status: 'Active',
-      ...data
-    } as Supplier;
   },
   updateSupplier: async (id: string, data: Partial<Supplier>): Promise<Supplier> => {
     try {
@@ -81,11 +118,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as Supplier;
   },
   addSupplierContract: async (supplierId: string, contract: Partial<SupplierContract>): Promise<Supplier> => {
     try {
@@ -94,18 +131,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(contract)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {} as Supplier;
   },
   deleteSupplier: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/suppliers/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -120,16 +158,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: `prd-${Date.now()}`,
-      priceHistory: [],
-      lastUpdated: new Date().toISOString().split('T')[0],
-      ...data
-    } as ProduceItem;
   },
   updateProduceItem: async (id: string, data: Partial<ProduceItem>): Promise<ProduceItem> => {
     try {
@@ -138,11 +171,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as ProduceItem;
   },
   updateProduceItemPrice: async (id: string, newPrice: number, reason: string, updatedBy: string, bundlesAndRanges?: any[]): Promise<ProduceItem> => {
     try {
@@ -151,18 +184,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newPrice, reason, updatedBy, bundlesAndRanges })
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {} as ProduceItem;
   },
   deleteProduceItem: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/produce/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -177,16 +211,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: `mat-${Date.now()}`,
-      priceHistory: [],
-      lastUpdated: new Date().toISOString().split('T')[0],
-      ...data
-    } as MaterialItem;
   },
   updateMaterial: async (id: string, data: Partial<MaterialItem> & { priceChangeReason?: string; updatedBy?: string }): Promise<MaterialItem> => {
     try {
@@ -195,11 +224,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as MaterialItem;
   },
   updateMaterialPrice: async (id: string, newPrice: number, reason: string, updatedBy: string, volumePricing?: any[]): Promise<MaterialItem> => {
     try {
@@ -208,18 +237,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ newPrice, reason, updatedBy, volumePricing })
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {} as MaterialItem;
   },
   deleteMaterial: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/materials/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -234,16 +264,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: `out-${Date.now()}`,
-      priceHistory: [],
-      lastUpdated: new Date().toISOString().split('T')[0],
-      ...data
-    } as OutsourcedService;
   },
   updateOutsourcedService: async (id: string, data: Partial<OutsourcedService> & { priceChangeReason?: string; updatedBy?: string }): Promise<OutsourcedService> => {
     try {
@@ -252,18 +277,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as OutsourcedService;
   },
   deleteOutsourcedService: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/outsourced/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -278,16 +304,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: `sub-${Date.now()}`,
-      rateHistory: [],
-      lastUpdated: new Date().toISOString().split('T')[0],
-      ...data
-    } as SubcontractorRateItem;
   },
   updateSubcontractor: async (id: string, data: Partial<SubcontractorRateItem> & { changeReason?: string; updatedBy?: string }): Promise<SubcontractorRateItem> => {
     try {
@@ -296,11 +317,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as SubcontractorRateItem;
   },
   updateSubcontractorRate: async (
     id: string,
@@ -324,18 +345,19 @@ export const api = {
           fullContractEstimate
         })
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return api.updateSubcontractor(id, { baseRate: newRate, rate: newRate, changeReason: reason, updatedBy, bulkPricingRanges, retailRate: newRetailRate, fullContractEstimate });
   },
   deleteSubcontractor: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/subcontractors/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
   updateOutsourcedRate: async (
@@ -358,11 +380,11 @@ export const api = {
           retailPrice
         })
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return api.updateOutsourcedService(id, { rate: newRate, priceChangeReason: reason, updatedBy, tierRates, retailPrice });
   },
 
   // Inventory
@@ -376,21 +398,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: `inv-${Date.now()}`,
-      onHand: 10,
-      reserved: 0,
-      available: 10,
-      reorderLevel: 5,
-      unitCost: 100,
-      location: 'Warehouse',
-      status: 'In Stock',
-      ...data
-    } as InventoryItem;
   },
   updateInventory: async (id: string, data: Partial<InventoryItem>): Promise<InventoryItem> => {
     try {
@@ -399,18 +411,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as InventoryItem;
   },
   deleteInventoryItem: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/inventory/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -421,11 +434,11 @@ export const api = {
   getProject: async (id: string): Promise<Project | null> => {
     try {
       const res = await fetch(`/api/projects/${id}`);
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return null;
   },
   createProject: async (data: Partial<Project>): Promise<Project> => {
     try {
@@ -434,16 +447,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: `proj-${Date.now()}`,
-      code: `PRJ-${Math.floor(1000 + Math.random() * 9000)}`,
-      createdDate: new Date().toISOString().split('T')[0],
-      ...data
-    } as Project;
   },
   updateProject: async (id: string, data: Partial<Project>): Promise<Project> => {
     try {
@@ -452,18 +460,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as Project;
   },
   deleteProject: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -475,11 +484,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(projectData)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return null;
   },
   calculateProjectProfitability: async (projectData: any) => {
     return api.calculateAnalytics(projectData);
@@ -505,11 +514,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(categoryData)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return { id: `cat-${Date.now()}`, ...categoryData };
   },
   updateCategory: async (id: string, categoryData: any): Promise<any> => {
     try {
@@ -518,18 +527,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(categoryData)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return categoryData;
   },
   deleteCategory: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/categories/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -544,18 +554,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(tileData)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return { id: `custom-tile-${Date.now()}`, ...tileData };
   },
   deleteCustomTile: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/custom-tiles/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -563,11 +574,11 @@ export const api = {
   exportDatabaseFromServer: async (): Promise<any> => {
     try {
       const res = await fetch('/api/database/export');
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return null;
   },
   importDatabaseToServer: async (data: any): Promise<boolean> => {
     try {
@@ -594,24 +605,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: data.id || `cli-${Date.now()}`,
-      name: data.name || 'New Enterprise Client',
-      tagline: data.tagline || 'Strategic Partner',
-      industry: data.industry || 'Manufacturing',
-      location: data.location || 'Global',
-      status: data.status || 'Active Partner',
-      activeProjectsCount: data.activeProjectsCount || 1,
-      totalQuotedValue: data.totalQuotedValue || 200000,
-      contactPerson: data.contactPerson || 'Buyer Lead',
-      email: data.email || 'client@enterprise.com',
-      themeId: data.themeId || 'pacific-sky',
-      ...data
-    } as ClientProfile;
   },
   updateClient: async (id: string, data: Partial<ClientProfile>): Promise<ClientProfile> => {
     try {
@@ -620,18 +618,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as ClientProfile;
   },
   deleteClient: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/clients/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -646,11 +645,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as CompanyDetails;
   },
 
   // Users
@@ -664,21 +663,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: data.id || `usr-${Date.now()}`,
-      employeeId: data.employeeId || 'EMP-01',
-      name: data.name || 'User',
-      email: data.email || 'user@example.com',
-      role: data.role || 'PROJECT_MANAGER',
-      department: data.department || 'Operations',
-      status: 'Active',
-      createdAt: new Date().toISOString(),
-      ...data
-    } as AppUser;
   },
   updateUser: async (id: string, data: Partial<AppUser>): Promise<AppUser> => {
     try {
@@ -687,18 +676,19 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return data as AppUser;
   },
   deleteUser: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`/api/users/${id}`, { method: 'DELETE' });
-      return res.ok;
-    } catch {
-      return true;
+      return await readOk(res);
+    } catch (e) {
+      console.error(e);
+      throw e;
     }
   },
 
@@ -713,24 +703,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: `txn-${Date.now()}`,
-      transactionNumber: `TXN-${Date.now().toString().slice(-6)}`,
-      type: 'IN',
-      materialId: '',
-      materialCode: '',
-      materialName: '',
-      quantity: 1,
-      unit: 'pcs',
-      price: 0,
-      totalAmount: 0,
-      timestamp: new Date().toISOString(),
-      ...data
-    } as InventoryTransaction;
   },
 
   // Audit Logs
@@ -744,20 +721,11 @@ export const api = {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
-      if (res.ok) return await res.json();
+      return await readJson(res);
     } catch (e) {
       console.error(e);
+      throw e;
     }
-    return {
-      id: `log-${Date.now()}`,
-      timestamp: new Date().toISOString(),
-      actorId: 'usr-admin',
-      actorName: 'Administrator',
-      actorRole: 'ADMIN',
-      action: 'SYSTEM_EVENT',
-      module: 'System',
-      ...data
-    } as AuditLogRecord;
   },
 
   // Media & Image Uploads (Stored in PostgreSQL inno_cost)

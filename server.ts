@@ -20,7 +20,7 @@ import { INITIAL_CLIENT_PROFILES } from './src/data/categoriesAndProfiles';
 import { postgresService } from './src/server/postgresDb';
 
 const DB_FILE = path.join(process.cwd(), 'data', 'database.json');
-const SECURITY_FILE = path.join(process.cwd(), 'data', 'security.json');
+const LEGACY_SECURITY_FILE = path.join(process.cwd(), 'data', 'security.json');
 
 // Ensure data directory exists
 if (!fs.existsSync(path.join(process.cwd(), 'data'))) {
@@ -59,98 +59,94 @@ function sanitizeUser(u: any) {
   return safe;
 }
 
-function loadSecurityStore() {
-  if (fs.existsSync(SECURITY_FILE)) {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(SECURITY_FILE, 'utf-8'));
-      let modified = false;
-      if (!parsed.adminSecretCode) {
-        parsed.adminSecretCode = 'A9HF-4K28@';
-        modified = true;
-      }
-      if (!parsed.backupCodes || !Array.isArray(parsed.backupCodes) || parsed.backupCodes.length === 0) {
-        parsed.backupCodes = generateBackupCodes(8);
-        modified = true;
-      }
-      if (!parsed.sessionTimeoutMinutes) {
-        parsed.sessionTimeoutMinutes = 30;
-        modified = true;
-      }
-      if (!parsed.users) {
-        parsed.users = [];
-        modified = true;
-      }
-      if (!parsed.sessions) parsed.sessions = {};
-      if (!parsed.tempMfaTokens) parsed.tempMfaTokens = {};
-      if (!parsed.pendingSignups) parsed.pendingSignups = {};
+// Security data lives in PostgreSQL (users table + security_settings table).
+// A memory copy is kept for fast reads. Every save is written to PostgreSQL.
+let SEC: any = null;
+let secWrite: Promise<void> = Promise.resolve();
 
-      // Ensure default admin user exists
-      let admin = parsed.users.find((u: any) => u.role === 'ADMIN');
-      if (!admin) {
-        const { hash, salt } = hashPassword('admin');
-        const newAdmin = {
-          id: 'user-admin-01',
-          employeeId: 'ADMIN-01',
-          name: 'Administrator',
-          email: 'nssl.graphics@gmail.com',
-          role: 'ADMIN',
-          department: 'Executive Management',
-          passwordHash: hash,
-          passwordSalt: salt,
-          status: 'Active',
-          createdAt: new Date().toISOString(),
-          twoFactorSecret: generateSecret(),
-          twoFactorEnabled: false
-        };
-        parsed.users.unshift(newAdmin);
-        modified = true;
-      }
-      if (modified) saveSecurityStore(parsed);
-      return parsed;
-    } catch (e) {
-      console.error('Error reading SECURITY_FILE:', e);
-    }
-  }
-
-  // Initial creation
-  const { hash, salt } = hashPassword('admin');
-  const initial = {
-    adminSecretCode: 'A9HF-4K28@',
+function defaultSecurity(users: any[]) {
+  return {
+    adminSecretCode: process.env.ADMIN_SECRET_CODE || crypto.randomBytes(6).toString('hex').toUpperCase(),
     backupCodes: generateBackupCodes(8),
     sessionTimeoutMinutes: 30,
-    users: [
-      {
-        id: 'user-admin-01',
-        employeeId: 'ADMIN-01',
-        name: 'Administrator',
-        email: 'nssl.graphics@gmail.com',
-        role: 'ADMIN',
-        department: 'Executive Management',
-        passwordHash: hash,
-        passwordSalt: salt,
-        status: 'Active',
-        createdAt: new Date().toISOString(),
-        twoFactorSecret: generateSecret(),
-        twoFactorEnabled: false
-      }
-    ],
+    users,
     sessions: {},
     tempMfaTokens: {},
     pendingSignups: {}
   };
-  saveSecurityStore(initial);
-  return initial;
+}
+
+async function initSecurityStore() {
+  let settings = await postgresService.getSecuritySettings();
+  let users = await postgresService.getAuthUsers();
+
+  // One time import of the old security.json file, then delete it
+  if (fs.existsSync(LEGACY_SECURITY_FILE)) {
+    try {
+      const legacy = JSON.parse(fs.readFileSync(LEGACY_SECURITY_FILE, 'utf-8'));
+      if (!settings) {
+        const { users: legacyUsers, ...rest } = legacy;
+        settings = rest;
+      }
+      for (const lu of legacy.users || []) {
+        const i = users.findIndex((u: any) => u.id === lu.id || u.email === lu.email);
+        if (i === -1) users.push(lu);
+        else users[i] = { ...users[i], passwordHash: lu.passwordHash, passwordSalt: lu.passwordSalt, twoFactorSecret: lu.twoFactorSecret, twoFactorEnabled: lu.twoFactorEnabled };
+      }
+      fs.unlinkSync(LEGACY_SECURITY_FILE);
+      console.log('[Security] Imported security.json into PostgreSQL and removed the file.');
+    } catch (e) {
+      console.error('[Security] Could not import security.json:', e);
+    }
+  }
+
+  const base = settings || defaultSecurity([]);
+  SEC = { ...defaultSecurity([]), ...base, users };
+  if (!SEC.sessions) SEC.sessions = {};
+  if (!SEC.tempMfaTokens) SEC.tempMfaTokens = {};
+  if (!SEC.pendingSignups) SEC.pendingSignups = {};
+  if (!SEC.backupCodes?.length) SEC.backupCodes = generateBackupCodes(8);
+
+  // Make sure one admin exists. Password comes from ADMIN_PASSWORD or is random and printed once.
+  if (!SEC.users.find((u: any) => u.role === 'ADMIN')) {
+    const pwd = process.env.ADMIN_PASSWORD || crypto.randomBytes(5).toString('hex');
+    const { hash, salt } = hashPassword(pwd);
+    SEC.users.unshift({
+      id: 'user-admin-01',
+      employeeId: 'ADMIN-01',
+      name: 'Administrator',
+      email: process.env.ADMIN_EMAIL || 'admin@example.com',
+      role: 'ADMIN',
+      department: 'Management',
+      passwordHash: hash,
+      passwordSalt: salt,
+      status: 'Active',
+      createdAt: new Date().toISOString(),
+      twoFactorSecret: generateSecret(),
+      twoFactorEnabled: false
+    });
+    if (!process.env.ADMIN_PASSWORD) console.log(`[Security] First admin created: ${SEC.users[0].email} / ${pwd}  (change it after login)`);
+  }
+  saveSecurityStore(SEC);
+  await secWrite;
+}
+
+function loadSecurityStore() {
+  return SEC;
 }
 
 function saveSecurityStore(data: any) {
-  try {
-    fs.writeFileSync(SECURITY_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (e) {
-    console.error('Error saving SECURITY_FILE:', e);
-  }
+  SEC = data;
+  const { users, ...settings } = data;
+  const snapshotUsers = JSON.parse(JSON.stringify(users || []));
+  const snapshotSettings = JSON.parse(JSON.stringify(settings));
+  secWrite = secWrite
+    .then(async () => {
+      await postgresService.saveSecuritySettings(snapshotSettings);
+      for (const u of snapshotUsers) await postgresService.upsertAuthUser(u);
+    })
+    .catch((e) => console.error('[Security] save failed:', e));
 }
-
-
 
 // Invoke Python Analytics Engine
 function runPythonAnalytics(projectData: any) {
@@ -274,15 +270,70 @@ async function startServer() {
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
+  // ---- Login and role checks for every /api route ----
+  const PUBLIC_ROUTES: Array<[string, RegExp]> = [
+    ['GET', /^\/api\/health$/],
+    ['GET', /^\/api\/company-details$/],
+    ['GET', /^\/api\/images\/[^/]+$/],
+    ['POST', /^\/api\/auth\/(login|verify-mfa|google-login|signup-init|signup-verify)$/],
+    ['GET', /^\/api\/auth\/session$/],          // checks its own token
+    ['POST', /^\/api\/auth\/(touch-session|logout)$/] // check their own token
+  ];
+  const ADMIN_ONLY: Array<[string | '*', RegExp]> = [
+    ['*', /^\/api\/users(\/|$)/],
+    ['*', /^\/api\/security(\/|$)/],
+    ['GET', /^\/api\/audit-logs$/],
+    ['*', /^\/api\/database(\/|$)/],
+    ['*', /^\/api\/reset-data$/],
+    ['PUT', /^\/api\/company-details$/]
+  ];
+
+  app.use('/api', (req: any, res, next) => {
+    const url = '/api' + req.path;
+    if (PUBLIC_ROUTES.some(([m, rx]) => m === req.method && rx.test(url))) return next();
+
+    const header = req.headers.authorization;
+    if (!header || !header.startsWith('Bearer ')) return res.status(401).json({ error: 'Please sign in' });
+    const sec = loadSecurityStore();
+    const token = header.split(' ')[1];
+    const session = sec.sessions[token];
+    if (!session) return res.status(401).json({ error: 'Please sign in' });
+
+    const idleMin = (Date.now() - session.lastActivity) / 60000;
+    if (idleMin > sec.sessionTimeoutMinutes) {
+      delete sec.sessions[token];
+      saveSecurityStore(sec);
+      return res.status(401).json({ error: 'Session expired' });
+    }
+    const user = sec.users.find((u: any) => u.id === session.userId);
+    if (!user || user.status === 'Inactive') return res.status(401).json({ error: 'Account is not active' });
+
+    if (ADMIN_ONLY.some(([m, rx]) => (m === '*' || m === req.method) && rx.test(url)) && user.role !== 'ADMIN') {
+      return res.status(403).json({ error: 'Admin only' });
+    }
+    session.lastActivity = Date.now();
+    req.user = sanitizeUser(user);
+    next();
+  });
+
   // --- Media & Image Upload API (PostgreSQL inno_cost) ---
   app.post('/api/upload-image', async (req, res) => {
     try {
       const { filename, mimeType, dataUrl, url } = req.body;
       if (url && !dataUrl) {
+        if (!/^https?:\/\/[^\s]+$/i.test(String(url)) || String(url).length > 2000) {
+          return res.status(400).json({ error: 'Image link must start with http:// or https://' });
+        }
         return res.json({ url, id: `ext-${Date.now()}` });
       }
       if (!dataUrl) {
         return res.status(400).json({ error: 'dataUrl or url is required' });
+      }
+      if (!/^data:image\/(png|jpe?g|webp|gif|svg\+xml);base64,[A-Za-z0-9+/=]+$/.test(String(dataUrl))) {
+        return res.status(400).json({ error: 'Only PNG, JPG, WEBP, GIF or SVG images' });
+      }
+      if (String(dataUrl).length > 3_000_000) {
+        return res.status(413).json({ error: 'Image is too large' });
       }
       const asset = await postgresService.saveMediaAsset(filename || 'upload.png', mimeType || 'image/png', dataUrl);
       res.json(asset);
@@ -304,10 +355,13 @@ async function startServer() {
           const mime = matches[1];
           const buffer = Buffer.from(matches[2], 'base64');
           res.setHeader('Content-Type', mime);
+          res.setHeader('X-Content-Type-Options', 'nosniff');
+          res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; sandbox");
           res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
           return res.send(buffer);
         }
       }
+      if (!/^https?:\/\//i.test(asset.dataUrl)) return res.status(404).json({ error: 'Image not found' });
       res.redirect(asset.dataUrl);
     } catch (e: any) {
       res.status(500).json({ error: 'Error fetching image', details: e?.message });
@@ -583,10 +637,7 @@ async function startServer() {
 
     // Check 1: Admin Secret Recovery Code
     if (user.role === 'ADMIN') {
-      if (
-        verificationCode === sec.adminSecretCode ||
-        verificationCode === 'A9HF-4K28@'
-      ) {
+      if (verificationCode === sec.adminSecretCode) {
         isValid = true;
       }
     }
@@ -889,7 +940,13 @@ async function startServer() {
   app.post('/api/users', async (req, res) => {
     const sec = loadSecurityStore();
     const { employeeId, name, email, role, department, password, status } = req.body;
-    const { hash, salt } = hashPassword(password || 'user123');
+    if (!password || String(password).length < 8) {
+      return res.status(400).json({ error: 'Password needs at least 8 characters' });
+    }
+    if (role && !['ADMIN', 'PROJECT_MANAGER'].includes(role)) {
+      return res.status(400).json({ error: 'Unknown role' });
+    }
+    const { hash, salt } = hashPassword(password);
     const newUser = {
       id: `user-${Date.now()}`,
       employeeId: employeeId || `EMP-${Date.now().toString().slice(-4)}`,
@@ -914,7 +971,6 @@ async function startServer() {
         email: newUser.email,
         role: newUser.role,
         department: newUser.department,
-        password: password || 'user123',
         status: newUser.status
       });
     } catch (e) {
@@ -1676,9 +1732,11 @@ async function startServer() {
 
   app.post('/api/inventory/transactions', async (req, res) => {
     try {
-      const created = await postgresService.createTransaction(req.body);
+      const actor = (req as any).user;
+      const created = await postgresService.createTransaction(req.body, { id: actor?.id, name: actor?.name });
       res.status(201).json(created);
     } catch (e: any) {
+      if (e?.status) return res.status(e.status).json({ error: e.message });
       console.error('Failed to record transaction:', e);
       res.status(500).json({ error: 'Failed to record transaction', details: e?.message });
     }
@@ -1697,12 +1755,39 @@ async function startServer() {
 
   app.post('/api/audit-logs', async (req, res) => {
     try {
-      const created = await postgresService.createAuditLog(req.body);
+      const actor = (req as any).user;
+      const created = await postgresService.createAuditLog({
+        ...req.body,
+        actorId: actor?.id,
+        actorName: actor?.name,
+        actorRole: actor?.role
+      });
       res.status(201).json(created);
     } catch (e: any) {
       console.error('Failed to create audit log:', e);
       res.status(500).json({ error: 'Failed to create audit log', details: e?.message });
     }
+  });
+
+  // --- Shared app settings (numbering rules, templates, image overrides, calendar) ---
+  const KV_KEY = /^[A-Za-z0-9_.\-]{1,80}$/;
+  app.get('/api/kv', async (_req, res) => {
+    try { res.json(await postgresService.getKv()); }
+    catch (e: any) { res.status(500).json({ error: e?.message }); }
+  });
+  app.put('/api/kv/:key', async (req, res) => {
+    const { key } = req.params;
+    const { value } = req.body || {};
+    if (!KV_KEY.test(key) || typeof value !== 'string' || value.length > 5_000_000) {
+      return res.status(400).json({ error: 'Bad key or value' });
+    }
+    try { await postgresService.setKv(key, value); res.json({ success: true }); }
+    catch (e: any) { res.status(500).json({ error: e?.message }); }
+  });
+  app.delete('/api/kv/:key', async (req, res) => {
+    if (!KV_KEY.test(req.params.key)) return res.status(400).json({ error: 'Bad key' });
+    try { await postgresService.deleteKv(req.params.key); res.json({ success: true }); }
+    catch (e: any) { res.status(500).json({ error: e?.message }); }
   });
 
   // --- Projects & Profitability API (PostgreSQL inno_cost) ---
@@ -1953,6 +2038,12 @@ async function startServer() {
     }
   });
 
+  // Connect to PostgreSQL first. Stop if it is not reachable.
+  await postgresService.getDb();
+  await migrateAndCleanLegacyDatabases();
+  await initSecurityStore();
+  console.log('[PostgreSQL] Connected to "inno_cost".');
+
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
@@ -1971,19 +2062,9 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
-
-  // Asynchronously initialize PostgreSQL Database ('inno_cost') in background
-  // This guarantees the dev server binds to port 3000 instantaneously
-  postgresService.getDb()
-    .then(async () => {
-      await migrateAndCleanLegacyDatabases();
-      console.log('[PostgreSQL] Connected successfully to "inno_cost" database (Sole Primary Database).');
-    })
-    .catch((err) => {
-      console.error('[PostgreSQL] Background initialization warning:', err);
-    });
 }
 
 startServer().catch((err) => {
   console.error('Fatal error starting server:', err);
+  process.exit(1);
 });

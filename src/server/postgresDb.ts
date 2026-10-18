@@ -1,6 +1,4 @@
-import path from 'path';
-import fs from 'fs';
-import { PGlite } from '@electric-sql/pglite';
+import pg from 'pg';
 
 import {
   INITIAL_SUPPLIERS,
@@ -15,60 +13,95 @@ import { INITIAL_CLIENT_PROFILES } from '../data/categoriesAndProfiles';
 import { buildDefaultCategories } from '../services/persistentDatabase';
 import { INITIAL_USERS, INITIAL_COMPANY_DETAILS, INITIAL_AUDIT_LOGS } from '../data/userAndAuditData';
 
-const DB_DIR = path.join(process.cwd(), 'data', 'inno_cost');
+// Numbers come back as JS numbers, not strings
+pg.types.setTypeParser(20, (v: string) => parseInt(v, 10));
+pg.types.setTypeParser(1700, (v: string) => parseFloat(v));
 
-// Ensure parent data directory exists
-if (!fs.existsSync(path.join(process.cwd(), 'data'))) {
-  fs.mkdirSync(path.join(process.cwd(), 'data'), { recursive: true });
+export interface Db {
+  query(sql: string, params?: any[]): Promise<{ rows: any[] }>;
+  exec(sql: string): Promise<void>;
+}
+
+function getDatabaseUrl(): string {
+  const url = process.env.DATABASE_URL;
+  if (!url) {
+    throw new Error('DATABASE_URL is not set. Example: postgresql://user:pass@localhost:5432/inno_cost');
+  }
+  return url;
 }
 
 export class PostgresService {
-  private pglite: PGlite | null = null;
+  private pool: pg.Pool | null = null;
+  private db: Db | null = null;
   private isInitialized = false;
-  private initPromise: Promise<PGlite> | null = null;
+  private seeding = false;
+  private initPromise: Promise<Db> | null = null;
 
-  public async getDb(): Promise<PGlite> {
-    if (this.pglite && this.isInitialized) {
-      return this.pglite;
-    }
-    if (this.initPromise) {
-      return this.initPromise;
-    }
+  public async getDb(): Promise<Db> {
+    if (this.db && (this.isInitialized || this.seeding)) return this.db;
+    if (this.initPromise) return this.initPromise;
 
     this.initPromise = (async () => {
       try {
-        this.pglite = new PGlite(DB_DIR);
-        await Promise.race([
-          this.pglite.waitReady,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('PGlite waitReady timed out after 10s')), 10000))
-        ]);
-      } catch (err) {
-        console.warn('[PostgreSQL inno_cost] Cluster init error, repairing data directory...', err);
+        const pool = new pg.Pool({ connectionString: getDatabaseUrl(), max: 10 });
+        pool.on('error', (e) => console.error('[PostgreSQL] pool error:', e.message));
+        await pool.query('SELECT 1');
+        this.pool = pool;
+        this.db = {
+          query: async (sql, params) => {
+            const r = await pool.query(sql, params);
+            return { rows: r.rows };
+          },
+          exec: async (sql) => {
+            await pool.query(sql);
+          }
+        };
+        this.seeding = true; // seed code calls getDb(); let it through
         try {
-          fs.rmSync(DB_DIR, { recursive: true, force: true });
-        } catch (_) {}
-        this.pglite = new PGlite(DB_DIR);
-        await Promise.race([
-          this.pglite.waitReady,
-          new Promise((_, reject) => setTimeout(() => reject(new Error('PGlite waitReady timed out after 10s (repaired)')), 10000))
-        ]);
-      }
-
-      if (!this.isInitialized) {
-        await this.initSchemaAndSeed();
+          await this.initSchemaAndSeed();
+        } finally {
+          this.seeding = false;
+        }
         this.isInitialized = true;
+        return this.db;
+      } catch (err) {
+        // Never delete data on error. Allow a clean retry on the next call.
+        this.initPromise = null;
+        this.pool = null;
+        this.db = null;
+        console.error('[PostgreSQL] connection failed:', (err as Error).message);
+        throw err;
       }
-      return this.pglite;
     })();
 
     return this.initPromise;
   }
 
+  // Run several queries as one all-or-nothing transaction
+  public async withTransaction<T>(fn: (q: (sql: string, params?: any[]) => Promise<{ rows: any[] }>) => Promise<T>): Promise<T> {
+    await this.getDb();
+    const client = await this.pool!.connect();
+    try {
+      await client.query('BEGIN');
+      const out = await fn(async (sql, params) => {
+        const r = await client.query(sql, params);
+        return { rows: r.rows };
+      });
+      await client.query('COMMIT');
+      return out;
+    } catch (e) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
   private async initSchemaAndSeed() {
-    if (!this.pglite) return;
+    const db = this.db!;
 
     // 1. Create Tables
-    await this.pglite.exec(`
+    await db.exec(`
       CREATE TABLE IF NOT EXISTS clients (
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
@@ -372,6 +405,18 @@ export class PostgresService {
         last_login TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS app_kv (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at TIMESTAMPTZ DEFAULT now()
+      );
+
+      CREATE TABLE IF NOT EXISTS security_settings (
+        key TEXT PRIMARY KEY,
+        value JSONB NOT NULL
+      );
+      ALTER TABLE users DROP COLUMN IF EXISTS password;
+
       CREATE TABLE IF NOT EXISTS account_requests (
         id TEXT PRIMARY KEY,
         employee_id TEXT,
@@ -413,14 +458,14 @@ export class PostgresService {
   }
 
   private async seedIfEmpty() {
-    if (!this.pglite) return;
+    const db = this.db!;
 
     // Seed Categories
-    const catCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM categories');
+    const catCount = await db.query('SELECT COUNT(*) as cnt FROM categories');
     if (Number((catCount.rows[0] as any)?.cnt || 0) === 0) {
       const defaultCats = buildDefaultCategories();
       for (const cat of defaultCats) {
-        await this.pglite.query(
+        await db.query(
           `INSERT INTO categories (id, name, type, group_name, parent_id, parent_name, brief, item_count, theme_id, custom_gradient, meta_badge, action_text, created_at)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
           [
@@ -443,9 +488,9 @@ export class PostgresService {
     }
 
     // Seed Company Details
-    const compCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM company_details');
+    const compCount = await db.query('SELECT COUNT(*) as cnt FROM company_details');
     if (Number((compCount.rows[0] as any)?.cnt || 0) === 0) {
-      await this.pglite.query(
+      await db.query(
         `INSERT INTO company_details (id, name, registration_number, tax_id, address, city, country, phone, email, website, currency, logo_position, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
         [
@@ -467,31 +512,10 @@ export class PostgresService {
     }
 
     // Seed Users (Admin user for authentication)
-    const usersCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM users');
-    if (Number((usersCount.rows[0] as any)?.cnt || 0) === 0) {
-      for (const u of INITIAL_USERS) {
-        await this.pglite.query(
-          `INSERT INTO users (id, employee_id, name, email, role, department, password, status, theme_preference, created_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           ON CONFLICT (id) DO NOTHING`,
-          [
-            u.id,
-            u.employeeId,
-            u.name,
-            u.email,
-            u.role,
-            u.department || 'Executive',
-            u.password || 'admin123',
-            u.status || 'Active',
-            u.themePreference || 'light',
-            u.createdAt || new Date().toISOString()
-          ]
-        );
-      }
-    }
+    // Users are not seeded here. The server creates the first admin at startup.
 
     // Seed Outsourced Services Tariffs
-    const outCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM outsourced_services');
+    const outCount = await db.query('SELECT COUNT(*) as cnt FROM outsourced_services');
     if (Number((outCount.rows[0] as any)?.cnt || 0) === 0) {
       for (const item of INITIAL_OUTSOURCED_SERVICES) {
         await this.createOutsourced(item);
@@ -499,7 +523,7 @@ export class PostgresService {
     }
 
     // Seed Materials
-    const matCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM materials');
+    const matCount = await db.query('SELECT COUNT(*) as cnt FROM materials');
     if (Number((matCount.rows[0] as any)?.cnt || 0) === 0) {
       for (const item of INITIAL_MATERIALS) {
         await this.createMaterial(item);
@@ -507,7 +531,7 @@ export class PostgresService {
     }
 
     // Seed Suppliers
-    const supCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM suppliers');
+    const supCount = await db.query('SELECT COUNT(*) as cnt FROM suppliers');
     if (Number((supCount.rows[0] as any)?.cnt || 0) === 0) {
       for (const item of INITIAL_SUPPLIERS) {
         await this.createSupplier(item);
@@ -515,7 +539,7 @@ export class PostgresService {
     }
 
     // Seed Subcontractors
-    const subCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM subcontractors');
+    const subCount = await db.query('SELECT COUNT(*) as cnt FROM subcontractors');
     if (Number((subCount.rows[0] as any)?.cnt || 0) === 0) {
       for (const item of INITIAL_SUBCONTRACTORS) {
         await this.createSubcontractor(item);
@@ -523,7 +547,7 @@ export class PostgresService {
     }
 
     // Seed Produce Items
-    const prodCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM produce_items');
+    const prodCount = await db.query('SELECT COUNT(*) as cnt FROM produce_items');
     if (Number((prodCount.rows[0] as any)?.cnt || 0) === 0) {
       for (const item of INITIAL_PRODUCE_ITEMS) {
         await this.createProduce(item);
@@ -531,7 +555,7 @@ export class PostgresService {
     }
 
     // Seed Projects
-    const projCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM projects');
+    const projCount = await db.query('SELECT COUNT(*) as cnt FROM projects');
     if (Number((projCount.rows[0] as any)?.cnt || 0) === 0) {
       for (const item of INITIAL_PROJECTS) {
         await this.createProject(item);
@@ -539,7 +563,7 @@ export class PostgresService {
     }
 
     // Seed Clients
-    const cliCount = await this.pglite.query('SELECT COUNT(*) as cnt FROM clients');
+    const cliCount = await db.query('SELECT COUNT(*) as cnt FROM clients');
     if (Number((cliCount.rows[0] as any)?.cnt || 0) === 0) {
       for (const item of INITIAL_CLIENT_PROFILES) {
         await this.createClient(item);
@@ -1747,8 +1771,8 @@ export class PostgresService {
     const db = await this.getDb();
     const id = data.id || `usr-${Date.now()}`;
     await db.query(
-      `INSERT INTO users (id, employee_id, name, email, role, department, password, status, theme_preference, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      `INSERT INTO users (id, employee_id, name, email, role, department, status, theme_preference, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, email=EXCLUDED.email, role=EXCLUDED.role, department=EXCLUDED.department`,
       [
         id,
@@ -1757,7 +1781,6 @@ export class PostgresService {
         data.email,
         data.role || 'PROJECT_MANAGER',
         data.department || 'Operations',
-        data.password || 'user123',
         data.status || 'Active',
         data.themePreference || 'light',
         new Date().toISOString()
@@ -1785,6 +1808,86 @@ export class PostgresService {
       ]
     );
     return merged;
+  }
+
+  // --- Auth users (full rows, server side only) ---
+  public async getAuthUsers(): Promise<any[]> {
+    const db = await this.getDb();
+    const res = await db.query('SELECT * FROM users ORDER BY created_at ASC');
+    return res.rows.map((r: any) => ({
+      id: r.id,
+      employeeId: r.employee_id,
+      name: r.name,
+      email: r.email,
+      role: r.role,
+      department: r.department,
+      status: r.status,
+      themePreference: r.theme_preference,
+      passwordHash: r.password_hash,
+      passwordSalt: r.password_salt,
+      twoFactorSecret: r.two_factor_secret,
+      twoFactorEnabled: !!r.two_factor_enabled,
+      createdAt: r.created_at,
+      lastLogin: r.last_login
+    }));
+  }
+
+  public async upsertAuthUser(u: any): Promise<void> {
+    const db = await this.getDb();
+    await db.query(
+      `INSERT INTO users (id, employee_id, name, email, role, department, status, theme_preference,
+                          password_hash, password_salt, two_factor_secret, two_factor_enabled, created_at, last_login)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+       ON CONFLICT (id) DO UPDATE SET
+         employee_id=EXCLUDED.employee_id, name=EXCLUDED.name, email=EXCLUDED.email, role=EXCLUDED.role,
+         department=EXCLUDED.department, status=EXCLUDED.status, theme_preference=EXCLUDED.theme_preference,
+         password_hash=EXCLUDED.password_hash, password_salt=EXCLUDED.password_salt,
+         two_factor_secret=EXCLUDED.two_factor_secret, two_factor_enabled=EXCLUDED.two_factor_enabled,
+         last_login=EXCLUDED.last_login`,
+      [
+        u.id, u.employeeId, u.name, u.email, u.role || 'PROJECT_MANAGER', u.department || null,
+        u.status || 'Active', u.themePreference || null, u.passwordHash || null, u.passwordSalt || null,
+        u.twoFactorSecret || null, !!u.twoFactorEnabled,
+        u.createdAt || new Date().toISOString(), u.lastLogin || null
+      ]
+    );
+  }
+
+  public async getKv(): Promise<Record<string, string>> {
+    const db = await this.getDb();
+    const res = await db.query('SELECT key, value FROM app_kv');
+    const out: Record<string, string> = {};
+    for (const r of res.rows) out[r.key] = r.value;
+    return out;
+  }
+
+  public async setKv(key: string, value: string): Promise<void> {
+    const db = await this.getDb();
+    await db.query(
+      `INSERT INTO app_kv (key, value) VALUES ($1, $2)
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value, updated_at=now()`,
+      [key, value]
+    );
+  }
+
+  public async deleteKv(key: string): Promise<void> {
+    const db = await this.getDb();
+    await db.query('DELETE FROM app_kv WHERE key=$1', [key]);
+  }
+
+  public async getSecuritySettings(): Promise<any | null> {
+    const db = await this.getDb();
+    const res = await db.query("SELECT value FROM security_settings WHERE key='main'");
+    return res.rows[0]?.value ?? null;
+  }
+
+  public async saveSecuritySettings(value: any): Promise<void> {
+    const db = await this.getDb();
+    await db.query(
+      `INSERT INTO security_settings (key, value) VALUES ('main', $1::jsonb)
+       ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value`,
+      [JSON.stringify(value)]
+    );
   }
 
   public async deleteUser(id: string): Promise<boolean> {
@@ -1898,38 +2001,69 @@ export class PostgresService {
     }));
   }
 
-  public async createTransaction(data: any): Promise<any> {
-    const db = await this.getDb();
-    const id = data.id || `txn-${Date.now()}`;
-    const txNum = data.transactionNumber || `TXN-${Date.now().toString().slice(-6)}`;
-    await db.query(
-      `INSERT INTO inventory_transactions (id, transaction_number, type, material_id, material_code, material_name, project_id, project_name, supplier_id, supplier_name, quantity, unit, price, discount, total_amount, previous_quantity, new_available_quantity, actor_name, actor_id, timestamp, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
-      [
+  public async createTransaction(data: any, actor?: { id?: string; name?: string }): Promise<any> {
+    const type = String(data.type || '').toUpperCase();
+    const qty = Number(data.quantity);
+    if (!['IN', 'OUT'].includes(type)) throw Object.assign(new Error('Type must be IN or OUT'), { status: 400 });
+    if (!Number.isFinite(qty) || qty <= 0) throw Object.assign(new Error('Quantity must be more than 0'), { status: 400 });
+
+    const id = `txn-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+    const txNum = data.transactionNumber || `TXN-${Date.now().toString().slice(-6)}${Math.floor(Math.random() * 90 + 10)}`;
+
+    return this.withTransaction(async (q) => {
+      let previous = 0;
+      let next = 0;
+      let materialId: string | null = data.materialId || null;
+
+      if (!materialId && data.materialCode) {
+        const m = await q('SELECT id FROM materials WHERE code=$1', [data.materialCode]);
+        materialId = m.rows[0]?.id || null;
+      }
+      if (!materialId) throw Object.assign(new Error('Material is required'), { status: 400 });
+
+      // lock the material row so two people cannot change stock at once
+      const mat = await q('SELECT in_stock, code, name, unit FROM materials WHERE id=$1 FOR UPDATE', [materialId]);
+      if (!mat.rows[0]) throw Object.assign(new Error('Material not found'), { status: 404 });
+      previous = Number(mat.rows[0].in_stock || 0);
+      next = type === 'IN' ? previous + qty : previous - qty;
+      if (next < 0) throw Object.assign(new Error(`Not enough stock. Available: ${previous}`), { status: 409 });
+
+      await q('UPDATE materials SET in_stock=$1, last_updated=$2 WHERE id=$3', [next, new Date().toISOString().split('T')[0], materialId]);
+      await q(
+        'UPDATE inventory SET on_hand=$1, available=GREATEST(0, $1 - COALESCE(reserved,0)) WHERE material_id=$2',
+        [next, materialId]
+      );
+
+      const price = Number(data.price || 0);
+      const discount = Number(data.discount || 0);
+      const total = Math.round(qty * price * (1 - discount / 100) * 100) / 100;
+
+      await q(
+        `INSERT INTO inventory_transactions (id, transaction_number, type, material_id, material_code, material_name, project_id, project_name, supplier_id, supplier_name, quantity, unit, price, discount, total_amount, previous_quantity, new_available_quantity, actor_name, actor_id, timestamp, notes)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+        [
+          id, txNum, type, materialId, mat.rows[0].code, mat.rows[0].name,
+          data.projectId || null, data.projectName || '', data.supplierId || null, data.supplierName || '',
+          qty, mat.rows[0].unit || data.unit || 'pcs', price, discount, total, previous, next,
+          actor?.name || data.actorName || 'Unknown', actor?.id || data.actorId || null,
+          new Date().toISOString(), data.notes || ''
+        ]
+      );
+
+      return {
+        ...data,
         id,
-        txNum,
-        data.type || 'IN',
-        data.materialId || null,
-        data.materialCode || '',
-        data.materialName || '',
-        data.projectId || null,
-        data.projectName || '',
-        data.supplierId || null,
-        data.supplierName || '',
-        Number(data.quantity || 0),
-        data.unit || 'pcs',
-        Number(data.price || 0),
-        Number(data.discount || 0),
-        Number(data.totalAmount || 0),
-        Number(data.previousAvailableQuantity ?? data.previousQuantity ?? 0),
-        Number(data.newAvailableQuantity || 0),
-        data.actorName || data.recordedBy || 'System Auditor',
-        data.actorId || null,
-        data.timestamp || new Date().toISOString(),
-        data.notes || ''
-      ]
-    );
-    return { ...data, id, transactionNumber: txNum };
+        transactionNumber: txNum,
+        type,
+        materialId,
+        materialCode: mat.rows[0].code,
+        materialName: mat.rows[0].name,
+        quantity: qty,
+        totalAmount: total,
+        previousAvailableQuantity: previous,
+        newAvailableQuantity: next
+      };
+    });
   }
 
   // --- Audit Logs CRUD ---
@@ -1995,12 +2129,10 @@ export class PostgresService {
     }
     return {
       connected: true,
-      engine: 'PostgreSQL (PGlite)',
+      engine: 'PostgreSQL',
       database: 'inno_cost',
-      directory: DB_DIR,
       isPrimary: true,
       soleDatabase: true,
-      otherSqlDatabases: 'None (Permanently removed)',
       tableCounts: counts
     };
   }

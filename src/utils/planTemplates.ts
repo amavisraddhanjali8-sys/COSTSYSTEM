@@ -1,4 +1,5 @@
 import { PlanTemplate, BudgetaryPlan, ProjectCostItem } from '../types';
+import { bizStore } from '../services/bizStore';
 
 const STORAGE_KEY = 'fxtt_plan_templates';
 
@@ -282,7 +283,7 @@ export const BUILT_IN_PLAN_TEMPLATES: PlanTemplate[] = [
 
 export function getCustomPlanTemplates(): PlanTemplate[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = bizStore.getItem(STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
@@ -320,7 +321,7 @@ export function savePlanTemplate(template: Omit<PlanTemplate, 'id' | 'createdAt'
   }
 
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    bizStore.setItem(STORAGE_KEY, JSON.stringify(updated));
     window.dispatchEvent(new CustomEvent('fxtt-plan-templates-updated', { detail: { template: newTemplate } }));
   } catch (e) {
     console.error('Error saving plan template to localStorage:', e);
@@ -335,7 +336,7 @@ export function deletePlanTemplate(id: string): boolean {
   if (filtered.length === custom.length) return false;
 
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered));
+    bizStore.setItem(STORAGE_KEY, JSON.stringify(filtered));
     window.dispatchEvent(new CustomEvent('fxtt-plan-templates-updated', { detail: { deletedId: id } }));
     return true;
   } catch (e) {

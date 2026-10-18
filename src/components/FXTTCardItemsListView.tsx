@@ -2128,7 +2128,6 @@ export const FXTTCardItemsListView: React.FC<FXTTCardItemsListViewProps> = ({
             <span className="bg-[#005f94] text-white font-normal px-2 py-0.5 rounded">
               {cardTag ? `${cardTag}: ` : ''}{cardTitle}
             </span>
-            {cardSubtitle && <span className="text-white/70 text-[11px]">• {cardSubtitle}</span>}
           </div>
         </div>
 

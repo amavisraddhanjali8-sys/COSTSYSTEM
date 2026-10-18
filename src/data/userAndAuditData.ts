@@ -32,7 +32,12 @@ export const INITIAL_COMPANY_DETAILS: CompanyDetails = {
 
 export const INITIAL_AUDIT_LOGS: AuditLogRecord[] = [];
 
-// Helper functions for persistent state
+// In memory copies. The server (PostgreSQL) is the source of truth.
+const memory = new Map<string, string>();
+const store = {
+  getItem: (k: string) => (memory.has(k) ? memory.get(k)! : null),
+  setItem: (k: string, v: string) => { memory.set(k, v); }
+};
 const USERS_STORAGE_KEY = 'fxtt_users_list';
 const REQUESTS_STORAGE_KEY = 'fxtt_account_requests';
 const COMPANY_STORAGE_KEY = 'fxtt_company_details';
@@ -45,7 +50,7 @@ const DEMO_NAMES = new Set(['Jane Doe', 'Marcus Vance', 'Alex Chen', 'Sarah Conn
 
 export function getStoredUsers(): AppUser[] {
   try {
-    const raw = localStorage.getItem(USERS_STORAGE_KEY);
+    const raw = store.getItem(USERS_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as any[];
       if (Array.isArray(parsed)) {
@@ -62,21 +67,21 @@ export function getStoredUsers(): AppUser[] {
         // Ensure Admin exists
         const adminIdx = cleaned.findIndex((u) => u.role === 'ADMIN');
         if (adminIdx === -1) {
-          cleaned.unshift(INITIAL_USERS[0]);
+          // no admin in list: leave as is (server decides)
         } else {
           // If admin email was still the legacy placeholder, update to user's real email
           if (cleaned[adminIdx].email === 'innovistametal@gmail.com') {
             cleaned[adminIdx].email = 'nssl.graphics@gmail.com';
           }
         }
-        localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(cleaned));
+        store.setItem(USERS_STORAGE_KEY, JSON.stringify(cleaned));
         return cleaned;
       }
     }
   } catch (e) {
     console.error(e);
   }
-  return INITIAL_USERS;
+  return [];
 }
 
 export function saveStoredUsers(users: AppUser[]): void {
@@ -85,7 +90,7 @@ export function saveStoredUsers(users: AppUser[]): void {
       const { password, ...safe } = u as any;
       return safe;
     });
-    localStorage.setItem(USERS_STORAGE_KEY, JSON.stringify(sanitized));
+    store.setItem(USERS_STORAGE_KEY, JSON.stringify(sanitized));
   } catch (e) {
     console.error(e);
   }
@@ -93,7 +98,7 @@ export function saveStoredUsers(users: AppUser[]): void {
 
 export function getStoredRequests(): AccountRequest[] {
   try {
-    const raw = localStorage.getItem(REQUESTS_STORAGE_KEY);
+    const raw = store.getItem(REQUESTS_STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch (e) {
     console.error(e);
@@ -103,7 +108,7 @@ export function getStoredRequests(): AccountRequest[] {
 
 export function saveStoredRequests(requests: AccountRequest[]): void {
   try {
-    localStorage.setItem(REQUESTS_STORAGE_KEY, JSON.stringify(requests));
+    store.setItem(REQUESTS_STORAGE_KEY, JSON.stringify(requests));
   } catch (e) {
     console.error(e);
   }
@@ -111,7 +116,7 @@ export function saveStoredRequests(requests: AccountRequest[]): void {
 
 export function getStoredCompanyDetails(): CompanyDetails {
   try {
-    const raw = localStorage.getItem(COMPANY_STORAGE_KEY);
+    const raw = store.getItem(COMPANY_STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
       if (!parsed.currency || parsed.currency.includes('USD')) {
@@ -127,7 +132,7 @@ export function getStoredCompanyDetails(): CompanyDetails {
 
 export function saveStoredCompanyDetails(details: CompanyDetails): void {
   try {
-    localStorage.setItem(COMPANY_STORAGE_KEY, JSON.stringify(details));
+    store.setItem(COMPANY_STORAGE_KEY, JSON.stringify(details));
   } catch (e) {
     console.error(e);
   }
@@ -135,7 +140,7 @@ export function saveStoredCompanyDetails(details: CompanyDetails): void {
 
 export function getStoredAuditLogs(): AuditLogRecord[] {
   try {
-    const raw = localStorage.getItem(AUDIT_STORAGE_KEY);
+    const raw = store.getItem(AUDIT_STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch (e) {
     console.error(e);
@@ -145,7 +150,7 @@ export function getStoredAuditLogs(): AuditLogRecord[] {
 
 export function saveStoredAuditLogs(logs: AuditLogRecord[]): void {
   try {
-    localStorage.setItem(AUDIT_STORAGE_KEY, JSON.stringify(logs));
+    store.setItem(AUDIT_STORAGE_KEY, JSON.stringify(logs));
   } catch (e) {
     console.error(e);
   }
@@ -153,7 +158,7 @@ export function saveStoredAuditLogs(logs: AuditLogRecord[]): void {
 
 export function getStoredCurrentUser(): AppUser | null {
   try {
-    const token = localStorage.getItem('fxtt_session_token');
+    const token = store.getItem('fxtt_session_token');
     if (!token) return null;
     const raw = localStorage.getItem(CURRENT_USER_STORAGE_KEY);
     if (raw) {

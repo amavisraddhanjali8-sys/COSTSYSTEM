@@ -244,12 +244,6 @@ export const ModernTileCard: React.FC<ModernTileCardProps> = ({
           {title}
         </h3>
 
-        {brief && (
-          <p className="mt-1.5 text-xs text-white/80 font-normal leading-snug line-clamp-2 max-w-sm">
-            {brief}
-          </p>
-        )}
-
         {extraMeta && (
           <div className="mt-2 text-white/90">
             {extraMeta}

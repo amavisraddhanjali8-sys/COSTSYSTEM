@@ -28,6 +28,7 @@ import {
 } from '../data/initialData';
 
 import { CategoryNode, ClientProfile, INITIAL_CLIENT_PROFILES } from '../data/categoriesAndProfiles';
+import { bizStore } from './bizStore';
 import { getStoredAutoNumberRules, saveStoredAutoNumberRules } from './autoNumberingService';
 import { getStoredCompanyDetails, saveStoredCompanyDetails } from '../data/userAndAuditData';
 
@@ -257,60 +258,38 @@ export function buildDefaultCategories(): CategoryNode[] {
   ];
 }
 
-// One-time cleanup of legacy demo caches from localStorage
-try {
-  const legacyKeys = [
-    'remix_db_materials_v2',
-    'remix_db_suppliers_v2',
-    'remix_db_outsourced_v2',
-    'remix_db_subcontractors_v2',
-    'remix_db_inventory_v2',
-    'remix_db_transactions_v2',
-    'remix_db_projects_v2',
-    'remix_db_produce_v2',
-    'remix_db_initialized_flag_v2',
-    'fxtt_category_hierarchy_demo'
-  ];
-  legacyKeys.forEach(k => localStorage.removeItem(k));
-} catch (e) {
-  // Ignore in SSR / non-browser contexts
-}
+// In memory copies of the lists loaded from the server (PostgreSQL).
+// Nothing here is written to browser storage.
+const memory = new Map<string, any>();
+const SHARED_KEYS = new Set<string>([DB_KEYS.CUSTOM_TILES, DB_KEYS.CALENDAR_EVENTS]);
 
-function getNonEmptyFallback<T>(passedFallback: T[] | undefined, defaultData?: T[]): T[] {
-  if (Array.isArray(passedFallback) && passedFallback.length > 0) {
-    return passedFallback;
-  }
-  return defaultData || [];
+function getNonEmptyFallback<T>(passedFallback: T[] | undefined, _defaultData?: T[]): T[] {
+  return Array.isArray(passedFallback) ? passedFallback : [];
 }
 
 function safeGet<T>(key: string, fallback: T): T {
   try {
-    const raw = localStorage.getItem(key);
-    if (!raw) {
-      safeSet(key, fallback);
-      return fallback;
+    if (SHARED_KEYS.has(key)) {
+      const raw = bizStore.getItem(key);
+      return raw ? (JSON.parse(raw) as T) : fallback;
     }
-    const parsed = JSON.parse(raw);
-    return parsed as T;
+    return memory.has(key) ? (memory.get(key) as T) : fallback;
   } catch (err) {
-    console.warn(`Error reading ${key} from persistent storage, using fallback:`, err);
-    safeSet(key, fallback);
+    console.warn(`Could not read ${key}:`, err);
     return fallback;
   }
 }
 
-let syncTimer: any = null;
-
 export function syncToBackendDatabase() {
-  // Direct PostgreSQL persistence is handled by transactional REST APIs
+  // Saving is done by the REST API routes
 }
 
 function safeSet<T>(key: string, data: T): void {
   try {
-    localStorage.setItem(key, JSON.stringify(data));
-    syncToBackendDatabase();
+    if (SHARED_KEYS.has(key)) bizStore.setItem(key, JSON.stringify(data));
+    else memory.set(key, data);
   } catch (err) {
-    console.error(`Error saving ${key} to persistent storage:`, err);
+    console.error(`Could not save ${key}:`, err);
   }
 }
 
@@ -429,7 +408,7 @@ export const persistentDatabase = {
 
   // 11. Calendar Events (Persisted)
   getCalendarEvents(fallback?: CalendarEvent[]): CalendarEvent[] {
-    return safeGet<CalendarEvent[]>(DB_KEYS.CALENDAR_EVENTS, fallback || INITIAL_CALENDAR_EVENTS);
+    return safeGet<CalendarEvent[]>(DB_KEYS.CALENDAR_EVENTS, fallback || []);
   },
   saveCalendarEvents(events: CalendarEvent[]): void {
     safeSet(DB_KEYS.CALENDAR_EVENTS, events);
@@ -676,7 +655,7 @@ export const persistentDatabase = {
     safeSet(DB_KEYS.PRODUCE, INITIAL_PRODUCE_ITEMS);
     safeSet(DB_KEYS.CATEGORIES, buildDefaultCategories());
     safeSet(DB_KEYS.CUSTOM_TILES, []);
-    safeSet(DB_KEYS.CALENDAR_EVENTS, INITIAL_CALENDAR_EVENTS);
+    safeSet(DB_KEYS.CALENDAR_EVENTS, []);
   },
 
   // Clear all dummy data

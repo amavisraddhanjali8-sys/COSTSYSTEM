@@ -154,15 +154,15 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   useEffect(() => {
     if (currentUser.role === 'ADMIN') {
       const token = getStoredSessionToken();
-      fetch('/api/admin/security-config', {
+      fetch('/api/security/admin-config', {
         headers: { Authorization: `Bearer ${token}` }
       })
         .then((r) => r.json())
         .then((data) => {
-          if (data && data.success) {
-            setTotpConfigured(Boolean(data.config?.totpEnabled));
-            if (data.config?.backupCodes) {
-              setBackupCodes(data.config.backupCodes);
+          if (data && !data.error) {
+            setTotpConfigured(Boolean(data.twoFactorEnabled));
+            if (Array.isArray(data.backupCodes)) {
+              setBackupCodes(data.backupCodes);
             }
           }
         })
@@ -1301,7 +1301,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
                     setStoredTimeoutMinutes(min);
                     const token = getStoredSessionToken();
                     if (token) {
-                      fetch('/api/admin/security-config', {
+                      fetch('/api/security/admin-config', {
                         method: 'POST',
                         headers: {
                           'Content-Type': 'application/json',

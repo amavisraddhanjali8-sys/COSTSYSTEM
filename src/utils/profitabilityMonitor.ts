@@ -1,4 +1,5 @@
 import { Project, InventoryItem } from '../types';
+import { bizStore } from '../services/bizStore';
 
 export interface ProjectProfitabilityAnalysis {
   projectId: string;
@@ -42,7 +43,7 @@ const DEFAULT_MARGIN_THRESHOLD = 20; // 20%
  */
 export function getMarginThreshold(): number {
   try {
-    const val = localStorage.getItem(THRESHOLD_STORAGE_KEY);
+    const val = bizStore.getItem(THRESHOLD_STORAGE_KEY);
     if (val !== null) {
       const parsed = parseFloat(val);
       if (!isNaN(parsed) && parsed >= 0 && parsed <= 100) {
@@ -61,7 +62,7 @@ export function getMarginThreshold(): number {
 export function setMarginThreshold(threshold: number): void {
   const clamped = Math.max(0, Math.min(100, Math.round(threshold * 10) / 10));
   try {
-    localStorage.setItem(THRESHOLD_STORAGE_KEY, clamped.toString());
+    bizStore.setItem(THRESHOLD_STORAGE_KEY, clamped.toString());
     window.dispatchEvent(new CustomEvent('margin-threshold-changed', { detail: { threshold: clamped } }));
   } catch (e) {
     // ignore
@@ -128,7 +129,7 @@ export function calculateProjectProfitability(
  */
 export function getDismissedAlertIds(): Set<string> {
   try {
-    const raw = localStorage.getItem(DISMISSED_ALERTS_KEY);
+    const raw = bizStore.getItem(DISMISSED_ALERTS_KEY);
     if (raw) {
       return new Set(JSON.parse(raw));
     }
@@ -145,7 +146,7 @@ export function dismissAlert(alertId: string): void {
   try {
     const set = getDismissedAlertIds();
     set.add(alertId);
-    localStorage.setItem(DISMISSED_ALERTS_KEY, JSON.stringify(Array.from(set)));
+    bizStore.setItem(DISMISSED_ALERTS_KEY, JSON.stringify(Array.from(set)));
     window.dispatchEvent(new CustomEvent('system-alerts-updated'));
   } catch (e) {
     // ignore
@@ -157,7 +158,7 @@ export function dismissAlert(alertId: string): void {
  */
 export function resetDismissedAlerts(): void {
   try {
-    localStorage.removeItem(DISMISSED_ALERTS_KEY);
+    bizStore.removeItem(DISMISSED_ALERTS_KEY);
     window.dispatchEvent(new CustomEvent('system-alerts-updated'));
   } catch (e) {
     // ignore

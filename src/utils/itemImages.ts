@@ -3,6 +3,7 @@
  * Supports Materials, Subcontractor Operations, Outsourced Services, Revenue Stream Produce Items, and Projects.
  * Includes local storage persistence so users can customize images on the fly.
  */
+import { bizStore } from '../services/bizStore';
 
 const LOCAL_STORAGE_IMAGE_KEY = 'fxtt_item_image_overrides';
 
@@ -86,7 +87,7 @@ export const ARCHETYPE_FALLBACKS: Record<string, string> = {
 export function getSavedImageOverrides(): Record<string, string> {
   if (typeof window === 'undefined') return {};
   try {
-    const raw = localStorage.getItem(LOCAL_STORAGE_IMAGE_KEY);
+    const raw = bizStore.getItem(LOCAL_STORAGE_IMAGE_KEY);
     if (!raw) return {};
     return JSON.parse(raw);
   } catch (err) {
@@ -103,7 +104,7 @@ export function saveItemImageOverride(itemIdOrCode: string, imageUrl: string): v
   try {
     const current = getSavedImageOverrides();
     current[itemIdOrCode.trim()] = imageUrl.trim();
-    localStorage.setItem(LOCAL_STORAGE_IMAGE_KEY, JSON.stringify(current));
+    bizStore.setItem(LOCAL_STORAGE_IMAGE_KEY, JSON.stringify(current));
     window.dispatchEvent(new CustomEvent('fxtt-image-updated', { 
       detail: { idOrCode: itemIdOrCode.trim(), imageUrl: imageUrl.trim() } 
     }));
@@ -122,7 +123,7 @@ export function removeItemImageOverride(itemIdOrCode: string): void {
     const key = itemIdOrCode.trim();
     if (current[key]) {
       delete current[key];
-      localStorage.setItem(LOCAL_STORAGE_IMAGE_KEY, JSON.stringify(current));
+      bizStore.setItem(LOCAL_STORAGE_IMAGE_KEY, JSON.stringify(current));
       window.dispatchEvent(new CustomEvent('fxtt-image-updated', { 
         detail: { idOrCode: key, reset: true } 
       }));

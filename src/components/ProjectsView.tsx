@@ -40,6 +40,7 @@ import { ColorGradientPicker } from './ColorGradientPicker';
 import { getRandomThemeIndex, getThemeById } from '../data/tileThemes';
 import { parseSmartSearch, evaluateSmartSearch, SearchableField } from '../utils/smartSearch';
 import { formatCurrency, SUPPORTED_CURRENCIES, getStoredCurrency } from '../utils/currency';
+import { bizStore } from '../services/bizStore';
 
 interface ProjectsViewProps {
   projects: Project[];
@@ -113,7 +114,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
   }, []);
   const [cardThemes, setCardThemes] = useState<Record<string, { themeId: string; customGradient?: string }>>(() => {
     try {
-      const saved = localStorage.getItem('fxtt_tile_theme_overrides');
+      const saved = bizStore.getItem('fxtt_tile_theme_overrides');
       if (saved) return JSON.parse(saved);
     } catch (e) {}
     return {
@@ -312,7 +313,7 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
         [id]: { themeId, customGradient: customGrad }
       };
       try {
-        localStorage.setItem('fxtt_tile_theme_overrides', JSON.stringify(updated));
+        bizStore.setItem('fxtt_tile_theme_overrides', JSON.stringify(updated));
       } catch (e) {}
       return updated;
     });
@@ -1276,7 +1277,6 @@ export const ProjectsView: React.FC<ProjectsViewProps> = ({
                       </span>
                     )}
                     <h4 className="text-xs font-normal text-slate-900">{opt.title}</h4>
-                    <p className="text-[10px] text-slate-600 mt-1 leading-snug">{opt.description}</p>
 
                     <div className="mt-2 space-y-1 pt-2 border-t border-slate-200 text-[11px]">
                       <div className="flex justify-between">

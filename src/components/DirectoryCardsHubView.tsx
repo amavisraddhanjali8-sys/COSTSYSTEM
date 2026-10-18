@@ -76,6 +76,7 @@ import {
   EditItemModal,
   DeleteConfirmModal
 } from './DirectoryCRUDModals';
+import { bizStore } from '../services/bizStore';
 
 export type DirectoryTab =
   | 'projects'
@@ -279,7 +280,7 @@ export const DirectoryCardsHubView: React.FC<DirectoryCardsHubViewProps> = ({
   // Dynamic theme overrides so user can change colors of any tile on the fly (persisted to localStorage)
   const [themeOverrides, setThemeOverrides] = useState<Record<string, { themeId: string; customGradient?: string }>>(() => {
     try {
-      const saved = localStorage.getItem('fxtt_tile_theme_overrides');
+      const saved = bizStore.getItem('fxtt_tile_theme_overrides');
       if (saved) return JSON.parse(saved);
     } catch (e) {}
     return {
@@ -410,7 +411,7 @@ export const DirectoryCardsHubView: React.FC<DirectoryCardsHubViewProps> = ({
         [cardId]: { themeId: newThemeId, customGradient: customGrad }
       };
       try {
-        localStorage.setItem('fxtt_tile_theme_overrides', JSON.stringify(updated));
+        bizStore.setItem('fxtt_tile_theme_overrides', JSON.stringify(updated));
       } catch (e) {}
       return updated;
     });
@@ -2928,7 +2929,6 @@ export const DirectoryCardsHubView: React.FC<DirectoryCardsHubViewProps> = ({
                               <tr key={item.id} className="hover:bg-slate-50/80 transition-colors">
                                 <td className="py-2.5 px-3">
                                   <div className="font-semibold text-slate-900">{item.name}</div>
-                                  <div className="text-[11px] text-slate-500 line-clamp-1">{item.brief || 'Certified trade operation'}</div>
                                 </td>
                                 <td className="py-2.5 px-3">
                                   <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-amber-50 text-amber-800 border border-amber-200">
@@ -5394,7 +5394,6 @@ export const DirectoryCardsHubView: React.FC<DirectoryCardsHubViewProps> = ({
                     '#003049'
                 }}
               />
-              <p className="text-xs text-slate-600 font-normal leading-relaxed">{activeDetailItem.description}</p>
 
               <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 space-y-2 text-xs">
                 {activeDetailItem.attributes.map((attr, idx) => (
